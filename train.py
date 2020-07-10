@@ -13,6 +13,8 @@ from utils import google_utils
 from utils.datasets import *
 from utils.utils import *
 
+import albumentations as A
+
 mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
     from apex import amp
@@ -60,6 +62,26 @@ if hyp['fl_gamma']:
 
 
 def train(hyp):
+    augmentations = [A.HorizontalFlip(p=0.5),
+                     A.VerticalFlip(p=0.5),
+                     A.RandomRotate90(p=0.5),
+                     A.Cutout(num_holes=15, max_h_size=120, max_w_size=120, p=0.2),
+                     A.GaussNoise(var_limit=(10, 50), p=0.1),
+                     A.CLAHE(p=0.3, clip_limit=(1, 16), tile_grid_size=(10, 10)),
+                     A.MotionBlur(blur_limit=(3,5), p=0.1),
+                     A.OneOf([A.RGBShift(r_shift_limit=30,
+                                        g_shift_limit=30,
+                                        b_shift_limit=30,
+                                        p=1.0),
+                              A.HueSaturationValue(hue_shift_limit=30,
+                                        sat_shift_limit=60,
+                                        val_shift_limit=30,
+                                        p=1.0)], p=0.1),
+                     A.OneOf([A.Blur(blur_limit=(3,5), p=1.0),
+                              A.MedianBlur(blur_limit=(3,5), p=1.0)],p=0.1),
+                     A.RandomBrightnessContrast(brightness_limit=(-0.2,0.2), contrast_limit=(-0.2,0.2), p=0.1),
+                     A.RandomResizedCrop(height=1024, width=1024, scale=(0.6,0.8), p=0.1)]
+
     epochs = opt.epochs  # 300
     batch_size = opt.batch_size  # 64
     weights = opt.weights  # initial training weights
@@ -163,7 +185,7 @@ def train(hyp):
 
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
-                                            hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect)
+                                            hyp=hyp, augment=True, augmentations=augmentations, cache=opt.cache_images, rect=opt.rect)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Correct your labels or your model.' % (mlc, nc, opt.cfg)
 

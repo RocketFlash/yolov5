@@ -16,6 +16,18 @@ from tqdm import tqdm
 
 from utils.utils import xyxy2xywh, xywh2xyxy
 
+
+from albumentations import (
+    BboxParams,
+    HorizontalFlip,
+    VerticalFlip,
+    Resize,
+    CenterCrop,
+    RandomCrop,
+    Crop,
+    Compose
+)
+
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.dng']
 vid_formats = ['.mov', '.avi', '.mp4', '.mpg', '.mpeg', '.m4v', '.wmv', '.mkv']
@@ -25,6 +37,10 @@ for orientation in ExifTags.TAGS.keys():
     if ExifTags.TAGS[orientation] == 'Orientation':
         break
 
+
+def get_aug(aug, min_area=0., min_visibility=0.):
+    return Compose(aug, bbox_params=BboxParams(format='pascal_voc', min_area=min_area, 
+                                               min_visibility=min_visibility, label_fields=['category_id']))
 
 def exif_size(img):
     # Returns exif-corrected PIL size
@@ -41,9 +57,10 @@ def exif_size(img):
     return s
 
 
-def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False):
+def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, augmentations=None, cache=False, pad=0.0, rect=False):
     dataset = LoadImagesAndLabels(path, imgsz, batch_size,
                                   augment=augment,  # augment images
+                                  augmentations=augmentations,
                                   hyp=hyp,  # augmentation hyperparameters
                                   rect=rect,  # rectangular training
                                   cache_images=cache,
@@ -277,7 +294,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
-    def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
+    def __init__(self, path, img_size=640, batch_size=16, augment=False, augmentations=None, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0):
         try:
             path = str(Path(path))  # os-agnostic
@@ -303,6 +320,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.batch = bi  # batch index of image
         self.img_size = img_size
         self.augment = augment
+        self.augmentations=augmentations
+        if self.augment:
+            self.aug = get_aug(self.augmentations)
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
@@ -489,16 +509,28 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 labels[:, 4] = ratio[1] * h * (x[:, 2] + x[:, 4] / 2) + pad[1]
 
         if self.augment:
-            # Augment imagespace
-            if not self.mosaic:
-                img, labels = random_affine(img, labels,
-                                            degrees=hyp['degrees'],
-                                            translate=hyp['translate'],
-                                            scale=hyp['scale'],
-                                            shear=hyp['shear'])
 
-            # Augment colorspace
-            augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
+            if labels.size != 0:
+                annotations = {'image': img, 'bboxes': labels[:,1:5], 'category_id': [0]*len(labels)}
+                augmented = self.aug(**annotations)
+                img = augmented['image']
+                augmented['bboxes'] = np.array(augmented['bboxes'])
+                if augmented['bboxes'].size != 0 :
+                    labels_new = np.zeros((augmented['bboxes'].shape[0], augmented['bboxes'].shape[1]+1))
+                    labels_new[:,1:] = augmented['bboxes']
+                    labels = labels_new
+                else:
+                    labels = np.array([])
+            # Augment imagespace
+            # if not self.mosaic:
+            #     img, labels = random_affine(img, labels,
+            #                                 degrees=hyp['degrees'],
+            #                                 translate=hyp['translate'],
+            #                                 scale=hyp['scale'],
+            #                                 shear=hyp['shear'])
+
+            # # Augment colorspace
+            # augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
 
             # Apply cutouts
             # if random.random() < 0.9:
@@ -513,20 +545,20 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             labels[:, [2, 4]] /= img.shape[0]  # height
             labels[:, [1, 3]] /= img.shape[1]  # width
 
-        if self.augment:
-            # random left-right flip
-            lr_flip = True
-            if lr_flip and random.random() < 0.5:
-                img = np.fliplr(img)
-                if nL:
-                    labels[:, 1] = 1 - labels[:, 1]
+        # if self.augment:
+        #     # random left-right flip
+        #     lr_flip = True
+        #     if lr_flip and random.random() < 0.5:
+        #         img = np.fliplr(img)
+        #         if nL:
+        #             labels[:, 1] = 1 - labels[:, 1]
 
-            # random up-down flip
-            ud_flip = False
-            if ud_flip and random.random() < 0.5:
-                img = np.flipud(img)
-                if nL:
-                    labels[:, 2] = 1 - labels[:, 2]
+        #     # random up-down flip
+        #     ud_flip = False
+        #     if ud_flip and random.random() < 0.5:
+        #         img = np.flipud(img)
+        #         if nL:
+        #             labels[:, 2] = 1 - labels[:, 2]
 
         labels_out = torch.zeros((nL, 6))
         if nL:
